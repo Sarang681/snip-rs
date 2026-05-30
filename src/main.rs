@@ -1,8 +1,9 @@
-use sqlx::{Pool, Postgres};
+use crate::state::AppState;
 
 mod db;
 mod encode;
 mod routes;
+mod state;
 
 #[tokio::main]
 async fn main() {
@@ -19,16 +20,4 @@ async fn main() {
         .unwrap();
 
     axum::serve(listener, app).await.unwrap();
-}
-
-#[derive(Clone)]
-struct AppState {
-    conn_pool: Pool<Postgres>,
-}
-
-impl AppState {
-    async fn new(url: &str) -> Self {
-        let conn_pool = db::connection_pool(url).await;
-        AppState { conn_pool }
-    }
 }
