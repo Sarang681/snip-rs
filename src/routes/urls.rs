@@ -1,6 +1,7 @@
 use axum::{
     Json, Router,
     extract::{Path, State},
+    response::Redirect,
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
@@ -37,10 +38,12 @@ async fn handle_shorten_url(
 async fn handle_redirect_from_short_code(
     State(state): State<AppState>,
     Path(short_code): Path<String>,
-) -> String {
+) -> Redirect {
     let db_pool = state.conn_pool;
 
     let decoded_id = encode::decode(&short_code).unwrap();
 
-    db::fetch_url(decoded_id, &db_pool).await
+    let long_url = db::fetch_url(decoded_id, &db_pool).await;
+
+    Redirect::temporary(&long_url)
 }
