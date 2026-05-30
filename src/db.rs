@@ -1,5 +1,7 @@
 use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
 
+use crate::error::AppError;
+
 pub async fn connection_pool(url: &str) -> Pool<Postgres> {
     PgPoolOptions::new()
         .max_connections(5)
@@ -8,8 +10,8 @@ pub async fn connection_pool(url: &str) -> Pool<Postgres> {
         .expect("Failed to create DB connection pool")
 }
 
-pub async fn add_url(url: &str, pool: &Pool<Postgres>) -> u64 {
-    sqlx::query!(
+pub async fn add_url(url: &str, pool: &Pool<Postgres>) -> Result<u64, AppError> {
+    let result = sqlx::query!(
         r#"
     INSERT INTO urls (long_url)
         VALUES ($1)
@@ -18,13 +20,13 @@ pub async fn add_url(url: &str, pool: &Pool<Postgres>) -> u64 {
         url
     )
     .fetch_one(pool)
-    .await
-    .unwrap()
-    .id as u64
+    .await?;
+
+    Ok(result.id as u64)
 }
 
-pub async fn fetch_url(id: u64, pool: &Pool<Postgres>) -> String {
-    sqlx::query!(
+pub async fn fetch_url(id: u64, pool: &Pool<Postgres>) -> Result<String, AppError> {
+    let result = sqlx::query!(
         r#"
     SELECT long_url
     FROM urls
@@ -33,7 +35,7 @@ pub async fn fetch_url(id: u64, pool: &Pool<Postgres>) -> String {
         id as i64
     )
     .fetch_one(pool)
-    .await
-    .unwrap()
-    .long_url
+    .await?;
+
+    Ok(result.long_url)
 }

@@ -6,7 +6,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{AppState, db, encode};
+use crate::{AppState, db, encode, error::AppError};
 
 #[derive(Deserialize)]
 struct ShortenRequest {
@@ -27,23 +27,24 @@ pub fn router() -> Router<AppState> {
 async fn handle_shorten_url(
     State(state): State<AppState>,
     Json(request): Json<ShortenRequest>,
-) -> Json<ShortenResponse> {
+) -> Result<Json<ShortenResponse>, AppError> {
     let db_pool = state.conn_pool;
-    let id = db::add_url(&request.long_url, &db_pool).await;
+    let id = db::add_url(&request.long_url, &db_pool).await?;
     let short_code = encode::encode(id);
 
-    Json(ShortenResponse { short_code })
+    Ok(Json(ShortenResponse { short_code }))
 }
 
 async fn handle_redirect_from_short_code(
     State(state): State<AppState>,
     Path(short_code): Path<String>,
-) -> Redirect {
+) -> Result<Redirect, AppError> {
     let db_pool = state.conn_pool;
-
-    let decoded_id = encode::decode(&short_code).unwrap();
-
-    let long_url = db::fetch_url(decoded_id, &db_pool).await;
-
-    Redirect::temporary(&long_url)
+    match encode::decode(&short_code) {
+        Some(decoded_id) => {
+            let long_url = db::fetch_url(decoded_id, &db_pool).await?;
+            Ok(Redirect::temporary(&long_url))
+        }
+        None => Err(AppError::BadUrlError),
+    }
 }

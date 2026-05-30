@@ -2,6 +2,7 @@ use crate::state::AppState;
 
 mod db;
 mod encode;
+mod error;
 mod routes;
 mod state;
 
