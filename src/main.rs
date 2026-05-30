@@ -1,3 +1,5 @@
+mod encode;
+
 use axum::Router;
 
 #[tokio::main]
