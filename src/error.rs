@@ -26,3 +26,9 @@ impl From<sqlx::Error> for AppError {
         }
     }
 }
+
+impl From<url::ParseError> for AppError {
+    fn from(_: url::ParseError) -> Self {
+        AppError::BadUrlError
+    }
+}
