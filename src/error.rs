@@ -4,6 +4,7 @@ pub enum AppError {
     BadUrlError,
     NotFoundError,
     DatabaseError(sqlx::Error),
+    Gone,
 }
 
 impl IntoResponse for AppError {
@@ -14,6 +15,11 @@ impl IntoResponse for AppError {
             AppError::DatabaseError(_) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Something went wrong").into_response()
             }
+            AppError::Gone => (
+                StatusCode::GONE,
+                "The requested resource is permanently gone, and no longer available",
+            )
+                .into_response(),
         }
     }
 }

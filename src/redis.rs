@@ -4,7 +4,7 @@ use fred::{
     clients::Client,
     interfaces::{ClientLike, KeysInterface},
     types::{
-        Builder,
+        Builder, Expiration,
         config::{Config, TcpConfig},
     },
 };
@@ -31,9 +31,11 @@ pub async fn put_key(
     client: &Client,
     short_code: &str,
     long_url: &str,
+    ttl: i64,
 ) -> Result<(), fred::error::Error> {
+    let expiration = Expiration::EX(ttl);
     client
-        .set::<String, _, _>(short_code, long_url, None, None, false)
+        .set::<String, _, _>(short_code, long_url, Some(expiration), None, false)
         .await?;
     Ok(())
 }

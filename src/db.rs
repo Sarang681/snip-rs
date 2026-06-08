@@ -1,6 +1,12 @@
-use sqlx::{Pool, Postgres, postgres::PgPoolOptions};
+use sqlx::{Pool, Postgres, postgres::PgPoolOptions, types::time::OffsetDateTime};
 
 use crate::error::AppError;
+
+pub struct FetchedLink {
+    pub id: u64,
+    pub long_url: String,
+    pub expiration_date: Option<OffsetDateTime>,
+}
 
 pub async fn connection_pool(url: &str) -> Pool<Postgres> {
     PgPoolOptions::new()
@@ -10,14 +16,19 @@ pub async fn connection_pool(url: &str) -> Pool<Postgres> {
         .expect("Failed to create DB connection pool")
 }
 
-pub async fn add_url(url: &str, pool: &Pool<Postgres>) -> Result<u64, AppError> {
+pub async fn add_url(
+    url: &str,
+    expiration_date: OffsetDateTime,
+    pool: &Pool<Postgres>,
+) -> Result<u64, AppError> {
     let result = sqlx::query!(
         r#"
-    INSERT INTO urls (long_url)
-        VALUES ($1)
+    INSERT INTO urls (long_url, expiration_date)
+        VALUES ($1, $2)
         RETURNING id
     "#,
-        url
+        url,
+        expiration_date
     )
     .fetch_one(pool)
     .await?;
@@ -25,10 +36,10 @@ pub async fn add_url(url: &str, pool: &Pool<Postgres>) -> Result<u64, AppError> 
     Ok(result.id as u64)
 }
 
-pub async fn fetch_url(id: u64, pool: &Pool<Postgres>) -> Result<String, AppError> {
+pub async fn fetch_url(id: u64, pool: &Pool<Postgres>) -> Result<FetchedLink, AppError> {
     let result = sqlx::query!(
         r#"
-    SELECT long_url
+    SELECT id, long_url, expiration_date
     FROM urls
     WHERE id = ($1)
     "#,
@@ -37,5 +48,9 @@ pub async fn fetch_url(id: u64, pool: &Pool<Postgres>) -> Result<String, AppErro
     .fetch_one(pool)
     .await?;
 
-    Ok(result.long_url)
+    Ok(FetchedLink {
+        id: result.id as u64,
+        long_url: result.long_url,
+        expiration_date: result.expiration_date,
+    })
 }

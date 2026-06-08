@@ -1,0 +1,2 @@
+ALTER TABLE urls 
+ADD COLUMN expiration_date TIMESTAMPTZ NULL;
