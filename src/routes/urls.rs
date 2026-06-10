@@ -1,31 +1,36 @@
-use std::ops::Add;
-
 use axum::{
     Json, Router,
     extract::{Path, State},
     response::Redirect,
     routing::{get, post},
 };
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sqlx::types::time::OffsetDateTime;
+use utoipa::{OpenApi, ToSchema};
 
 use crate::{
     AppState,
     db::{self, FetchedLink},
     encode,
-    error::AppError,
+    error::{AppError, ErrorResponse},
     redis,
 };
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, ToSchema)]
 struct ShortenRequest {
+    /// The original, long URL to be shortened
+    #[schema(required = true, value_type = String, format = "uri", example="https://example.com/very/long/url")]
     long_url: String,
-    expiration_date: i64,
+    ///Optional Unix timestamp in **seconds** when the link should expire.
+    ///If omitted, the link will never expire.
+    #[schema(required = false, value_type = i64, format = "int64", example = 1781049600)]
+    expiration_date: Option<i64>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct ShortenResponse {
+    ///The generated Base62 short code.
+    #[schema(value_type = String, example = "3Jt")]
     short_code: String,
 }
 
@@ -36,13 +41,22 @@ pub fn router() -> Router<AppState> {
 }
 
 #[tracing::instrument(skip(state))]
+#[utoipa::path(
+    post,
+    path = "/shorten",
+    request_body = ShortenRequest,
+    responses(
+        (status = 201, description = "URL successfully shortened", body = ShortenResponse),
+        (status = 400, description = "Invalid URL provided", body = ErrorResponse),
+        (status = 500, description = "Something went wrong", body = ErrorResponse)
+    )
+)]
 async fn handle_shorten_url(
     State(state): State<AppState>,
     Json(request): Json<ShortenRequest>,
 ) -> Result<Json<ShortenResponse>, AppError> {
     validate_request_url(&request.long_url)?;
-    let expiration_date = OffsetDateTime::from_unix_timestamp(request.expiration_date)
-        .expect("Invalid expiration date");
+    let expiration_date = validate_and_extract_expiration_date(request.expiration_date)?;
     let db_pool = &state.conn_pool;
     let id = db::add_url(&request.long_url, expiration_date, &db_pool).await?;
     let short_code = encode::encode(id);
@@ -51,6 +65,16 @@ async fn handle_shorten_url(
 }
 
 #[tracing::instrument(skip(state))]
+#[utoipa::path(
+    get,
+    path="/{short_code}",
+    responses(
+        (status = 307, description = "Temporary redirect to the original long URL"),
+        (status = 404, description = "Short code is invalid or does not exist in the database", body = ErrorResponse),
+        (status = 410, description = "The link has expired and is no longer available", body = ErrorResponse) ,
+        (status = 500, description = "Something went wrong", body = ErrorResponse)
+    )
+)]
 async fn handle_redirect_from_short_code(
     State(state): State<AppState>,
     Path(short_code): Path<String>,
@@ -79,6 +103,17 @@ async fn handle_redirect_from_short_code(
 fn validate_request_url(url: &str) -> Result<url::Url, AppError> {
     let parsed_url = url::Url::parse(url)?;
     Ok(parsed_url)
+}
+
+fn validate_and_extract_expiration_date(
+    request_expiration_date: Option<i64>,
+) -> Result<Option<OffsetDateTime>, AppError> {
+    if let Some(expiration_date) = request_expiration_date {
+        let result = OffsetDateTime::from_unix_timestamp(expiration_date)?;
+        Ok(Some(result)) //TODO: add validation here, instead of using inspect
+    } else {
+        Ok(None)
+    }
 }
 
 async fn insert_short_code_into_redis(state: &AppState, short_code: &str, result: &FetchedLink) {

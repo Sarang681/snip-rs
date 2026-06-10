@@ -5,6 +5,7 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 mod db;
 mod encode;
 mod error;
+mod openapi;
 mod redis;
 mod routes;
 mod state;

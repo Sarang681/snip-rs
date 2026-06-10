@@ -18,7 +18,7 @@ pub async fn connection_pool(url: &str) -> Pool<Postgres> {
 
 pub async fn add_url(
     url: &str,
-    expiration_date: OffsetDateTime,
+    expiration_date: Option<OffsetDateTime>,
     pool: &Pool<Postgres>,
 ) -> Result<u64, AppError> {
     let result = sqlx::query!(
