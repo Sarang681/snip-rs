@@ -1,13 +1,9 @@
-use sqlx::{Pool, Postgres, postgres::PgPoolOptions, types::time::OffsetDateTime};
+use sqlx::{Pool, Postgres, QueryBuilder, postgres::PgPoolOptions, types::time::OffsetDateTime};
 
-use crate::error::AppError;
-
-pub struct FetchedLink {
-    pub id: u64,
-    pub long_url: String,
-    pub expiration_date: Option<OffsetDateTime>,
-}
-
+use crate::{
+    error::AppError,
+    models::{ClickEvent, FetchedLink},
+};
 pub async fn connection_pool(url: &str) -> Pool<Postgres> {
     PgPoolOptions::new()
         .max_connections(5)
@@ -49,8 +45,28 @@ pub async fn fetch_url(id: u64, pool: &Pool<Postgres>) -> Result<FetchedLink, Ap
     .await?;
 
     Ok(FetchedLink {
-        id: result.id as u64,
         long_url: result.long_url,
         expiration_date: result.expiration_date,
     })
+}
+
+pub async fn add_event_click(
+    clicks: &Vec<ClickEvent>,
+    pool: &Pool<Postgres>,
+) -> Result<(), AppError> {
+    let mut query_builder: QueryBuilder<Postgres> = QueryBuilder::new(
+        "INSERT INTO clicks (short_code, ip_addr, referrer, user_agent, clicked_at)",
+    );
+
+    query_builder.push_values(clicks, |mut b, click| {
+        b.push_bind(&click.short_code)
+            .push_bind(&click.ip_addr)
+            .push_bind(&click.referrer)
+            .push_bind(&click.user_agent)
+            .push_bind(&click.clicked_at);
+    });
+
+    let query = query_builder.build();
+    query.execute(pool).await?;
+    Ok(())
 }

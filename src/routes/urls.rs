@@ -1,38 +1,23 @@
+use std::net::SocketAddr;
+
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{ConnectInfo, Path, State},
+    http::HeaderMap,
     response::Redirect,
     routing::{get, post},
 };
-use serde::{Deserialize, Serialize};
 use sqlx::types::time::OffsetDateTime;
-use utoipa::{OpenApi, ToSchema};
+use tokio::sync::mpsc::Sender;
 
 use crate::{
     AppState,
-    db::{self, FetchedLink},
+    db::{self},
     encode,
     error::{AppError, ErrorResponse},
+    models::{ClickEvent, FetchedLink, ShortenRequest, ShortenResponse},
     redis,
 };
-
-#[derive(Deserialize, Debug, ToSchema)]
-struct ShortenRequest {
-    /// The original, long URL to be shortened
-    #[schema(required = true, value_type = String, format = "uri", example="https://example.com/very/long/url")]
-    long_url: String,
-    ///Optional Unix timestamp in **seconds** when the link should expire.
-    ///If omitted, the link will never expire.
-    #[schema(required = false, value_type = i64, format = "int64", example = 1781049600)]
-    expiration_date: Option<i64>,
-}
-
-#[derive(Serialize, ToSchema)]
-struct ShortenResponse {
-    ///The generated Base62 short code.
-    #[schema(value_type = String, example = "3Jt")]
-    short_code: String,
-}
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -78,9 +63,32 @@ async fn handle_shorten_url(
 async fn handle_redirect_from_short_code(
     State(state): State<AppState>,
     Path(short_code): Path<String>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>, //TODO: use axum-client-ip crate to extract IP address
+    headers: HeaderMap,
 ) -> Result<Redirect, AppError> {
+    let ip_addr = addr.ip().to_string();
+    let user_agent = headers
+        .get("user-agent")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("Unknown")
+        .to_string();
+    let referrer = headers
+        .get("referer")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("None")
+        .to_string();
+
+    let click_event = ClickEvent {
+        short_code: short_code.clone(),
+        ip_addr,
+        user_agent,
+        referrer,
+        clicked_at: OffsetDateTime::now_utc(),
+    };
+
     if let Some(long_url) = fetch_long_url_from_redis(&state, &short_code).await {
         tracing::info!("Found url in redis, returning without making db call");
+        send_click_event(state.event_sender, click_event).await;
         return Ok(Redirect::temporary(&long_url));
     }
     let db_pool = &state.conn_pool;
@@ -94,6 +102,7 @@ async fn handle_redirect_from_short_code(
                 }
             }
             insert_short_code_into_redis(&state, &short_code, &result).await;
+            send_click_event(state.event_sender, click_event).await;
             Ok(Redirect::temporary(&result.long_url))
         }
         None => Err(AppError::BadUrlError),
@@ -110,7 +119,7 @@ fn validate_and_extract_expiration_date(
 ) -> Result<Option<OffsetDateTime>, AppError> {
     if let Some(expiration_date) = request_expiration_date {
         let result = OffsetDateTime::from_unix_timestamp(expiration_date)?;
-        Ok(Some(result)) //TODO: add validation here, instead of using inspect
+        Ok(Some(result))
     } else {
         Ok(None)
     }
@@ -150,4 +159,10 @@ async fn fetch_long_url_from_redis(state: &AppState, short_code: &str) -> Option
         }
     }
     None
+}
+
+async fn send_click_event(event_sender: Sender<ClickEvent>, click_event: ClickEvent) {
+    if let Err(e) = event_sender.try_send(click_event) {
+        tracing::warn!("Receiver dropped :: {}", e);
+    }
 }

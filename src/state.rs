@@ -1,16 +1,18 @@
 use fred::clients::Client;
 use sqlx::{Pool, Postgres};
+use tokio::sync::mpsc::Sender;
 
-use crate::{db, redis};
+use crate::{db, models::ClickEvent, redis};
 
 #[derive(Clone, Debug)]
 pub struct AppState {
     pub conn_pool: Pool<Postgres>,
     pub redis_client: Option<Client>,
+    pub event_sender: Sender<ClickEvent>,
 }
 
 impl AppState {
-    pub async fn new(db_url: &str, redis_url: &str) -> Self {
+    pub async fn new(db_url: &str, redis_url: &str, event_sender: Sender<ClickEvent>) -> Self {
         let conn_pool = db::connection_pool(db_url).await;
         let redis_client = redis::get_redis_client(redis_url).await.ok();
 
@@ -22,6 +24,7 @@ impl AppState {
         AppState {
             conn_pool,
             redis_client,
+            event_sender,
         }
     }
 }
