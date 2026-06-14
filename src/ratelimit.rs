@@ -25,20 +25,35 @@ where
             .to_string();
 
         let state = AppState::from_ref(state);
-        let client = state.redis_client;
+        let client = &state.redis_client;
 
         if let Some(client) = client {
             if let Ok(value) = redis::put_rate_limit_key(&client, &ip_addr, "create_link").await {
-                if value >= 5 {
+                if value > 5 {
                     return Err(AppError::RateLimitedError);
                 }
             } else {
-                return Err(AppError::ServerError);
+                rate_limit_moka(&ip_addr, &state).await?;
             }
         } else {
-            return Err(AppError::ServerError);
+            rate_limit_moka(&ip_addr, &state).await?;
         }
 
         Ok(Self)
     }
+}
+
+async fn rate_limit_moka(ip_addr: &str, state: &AppState) -> Result<(), AppError> {
+    let moka_cache = &state.moka_cache;
+    let key = format!("ratelimit:{}:{}", ip_addr, "create_link");
+    let current_count = moka_cache.get(&key).await;
+    if let Some(current_count) = current_count {
+        if current_count + 1 > 5 {
+            return Err(AppError::RateLimitedError);
+        }
+        moka_cache.insert(key, current_count + 1).await;
+    } else {
+        moka_cache.insert(key, 1).await;
+    }
+    Ok(())
 }

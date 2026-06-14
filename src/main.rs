@@ -1,6 +1,7 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Duration};
 
 use crate::{models::ClickEvent, state::AppState};
+use moka::future::Cache;
 use tokio::sync::mpsc;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
@@ -27,10 +28,14 @@ async fn main() {
 
     let db_url = std::env::var("DATABASE_URL").expect("Databse URL not provided");
     let redis_url = std::env::var("REDIS_URL").expect("Redis URL not provided");
+    let moka_cache: Cache<String, i64> = Cache::builder()
+        .max_capacity(50_000)
+        .time_to_live(Duration::from_secs(60))
+        .build();
 
     let (tx, rx) = mpsc::channel::<ClickEvent>(100_000);
 
-    let app_state = AppState::new(&db_url, &redis_url, tx.clone()).await;
+    let app_state = AppState::new(&db_url, &redis_url, tx.clone(), moka_cache).await;
 
     drop(tx);
 
