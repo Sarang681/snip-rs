@@ -18,6 +18,8 @@ pub enum AppError {
     DatabaseError(sqlx::Error),
     Gone,
     BadTimestampError,
+    RateLimitedError,
+    ServerError,
 }
 
 impl IntoResponse for AppError {
@@ -50,6 +52,16 @@ impl IntoResponse for AppError {
                 StatusCode::BAD_REQUEST,
                 "BadTimestampError",
                 "The provided expiration timestamp is invalid or out of range.",
+            ),
+            AppError::RateLimitedError => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "RateLimitedError",
+                "User has exceeded the limit of requests that can be made in a minute.",
+            ),
+            AppError::ServerError => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "ServerError",
+                "Something went wrong",
             ),
         };
 

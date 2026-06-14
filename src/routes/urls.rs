@@ -16,6 +16,7 @@ use crate::{
     encode,
     error::{AppError, ErrorResponse},
     models::{ClickEvent, FetchedLink, ShortenRequest, ShortenResponse},
+    ratelimit::RateLimited,
     redis,
 };
 
@@ -38,6 +39,7 @@ pub fn router() -> Router<AppState> {
 )]
 async fn handle_shorten_url(
     State(state): State<AppState>,
+    _rate_limit: RateLimited,
     Json(request): Json<ShortenRequest>,
 ) -> Result<Json<ShortenResponse>, AppError> {
     validate_request_url(&request.long_url)?;
@@ -128,7 +130,7 @@ fn validate_and_extract_expiration_date(
 async fn insert_short_code_into_redis(state: &AppState, short_code: &str, result: &FetchedLink) {
     if let Some(client) = &state.redis_client {
         let ttl = get_cache_ttl(result.expiration_date);
-        match redis::put_key(client, short_code, &result.long_url, ttl).await {
+        match redis::put_url_key(client, short_code, &result.long_url, ttl).await {
             Ok(_) => tracing::info!("Inserted code :: {} successfully", short_code),
             Err(_) => tracing::warn!("Could not insert the short code into redis"),
         }
@@ -148,7 +150,7 @@ fn get_cache_ttl(expiration_date: Option<OffsetDateTime>) -> i64 {
 
 async fn fetch_long_url_from_redis(state: &AppState, short_code: &str) -> Option<String> {
     if let Some(client) = &state.redis_client {
-        match redis::get_key(client, short_code).await {
+        match redis::get_url_key(client, short_code).await {
             Ok(result) => {
                 return Some(result);
             }

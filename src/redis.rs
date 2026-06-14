@@ -27,7 +27,7 @@ pub async fn get_redis_client(url: &str) -> Result<Client, fred::error::Error> {
     Ok(client)
 }
 
-pub async fn put_key(
+pub async fn put_url_key(
     client: &Client,
     short_code: &str,
     long_url: &str,
@@ -40,8 +40,24 @@ pub async fn put_key(
     Ok(())
 }
 
-pub async fn get_key(client: &Client, short_code: &str) -> Result<String, fred::error::Error> {
+pub async fn get_url_key(client: &Client, short_code: &str) -> Result<String, fred::error::Error> {
     let long_url: String = client.get(short_code).await?;
 
     Ok(long_url)
+}
+
+pub async fn put_rate_limit_key(
+    client: &Client,
+    ip_addr: &str,
+    action: &str,
+) -> Result<i64, fred::error::Error> {
+    let key = format!("ratelimit:{}:{}", ip_addr, action);
+
+    let value = client.incr::<i64, &String>(&key).await?;
+
+    if value == 1 {
+        client.expire::<bool, _>(&key, 60, None).await?;
+    }
+
+    Ok(value)
 }

@@ -10,6 +10,7 @@ mod encode;
 mod error;
 mod models;
 mod openapi;
+mod ratelimit;
 mod receiver;
 mod redis;
 mod routes;
