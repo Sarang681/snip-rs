@@ -48,7 +48,8 @@ src/
 ├── models.rs        # Data structures (FetchedLink, ClickEvent, ShortenRequest)
 ├── encode.rs        # Base62 encode/decode
 ├── db.rs            # all database queries (including batch inserts)
-├── redis.rs         # Redis client setup and get/set/incr operations
+├── cache.rs         # Redis get/set operations
+├── redis.rs         # Redis client setup & rate limit logic
 ├── receiver.rs      # Background worker (mpsc receiver, tokio::select! batching)
 ├── extractors/      # Custom Axum extractors (e.g., RateLimited)
 └── routes/
@@ -140,30 +141,47 @@ Benchmarked with [wrk](https://github.com/wg/wrk) — 4 threads, 1000 concurrent
 
 **Note:** Even with the added overhead of extracting headers, allocating click events, and checking the rate limiter on every request, the system maintains a blazing fast ~23ms average latency. The slight drop in total throughput compared to the pure Redis cache benchmark is the intentional cost of capturing analytics and enforcing security.
 
-## Performance & Architectural Trade-offs: Click Tracking
+## 🏗️ Architectural Decisions & Trade-offs
 
-Building a high-throughput analytics pipeline for a URL shortener presents a classic distributed systems challenge: **how to record telemetry without degrading the primary user experience (the redirect).**
+Building a production-grade system requires making deliberate choices based on the specific constraints of the application. Below is a detailed breakdown of the architectural trade-offs encountered in `snip-rs`.
 
-To solve this, `snip-rs` uses an asynchronous, bounded MPSC channel to decouple the HTTP redirect handler from the database write operation. During load testing (`wrk -t4 -c1000 -d30s`), we evaluated two distinct backpressure strategies:
+### 1. Telemetry vs. User Latency (Click Tracking)
+**The Decision:** We use a non-blocking, load-shedding MPSC channel (`.try_send()`) paired with a massive 100,000-item memory buffer, rather than strict blocking backpressure (`.send().await`).
+**The Alternatives:** 
+- *Strict Backpressure:* Pauses the HTTP handler if the DB is slow. Guarantees 100% data retention but spikes user-facing latency to ~800ms under load.
+- *Unbounded Channel:* Never drops data, but risks an Out-Of-Memory (OOM) crash during a traffic spike.
+**The "Why":** For a URL shortener, **redirect latency is mission-critical**, while analytics are "nice-to-have." By using a large but strictly bounded buffer (~30MB of RAM), the system acts as a shock absorber. It captures sudden, short traffic spikes (like a link going viral) with zero data loss. However, during sustained, extreme load, it gracefully sheds telemetry to guarantee that **every single user experiences a sub-50ms redirect**, while strictly capping memory usage to prevent OOM crashes.
 
-| Strategy | Implementation | Throughput | P99 Latency | Data Retention | Behavior Under Load |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Strict Backpressure** | `.send().await` | ~6,000 req/sec | ~795 ms | **100%** | HTTP handlers pause and wait for the DB when the channel fills. Guarantees zero data loss, but severely degrades user-facing latency during traffic spikes. |
-| **Load Shedding** *(Chosen)* | `.try_send()` | **~41,800 req/sec** | **~41 ms** | **~25%** *(during extreme sustained spikes)* | If the 100,000-capacity channel fills, analytics events are instantly dropped. The redirect is returned immediately. |
+### 2. Rate Limiting Algorithm (Fixed Window vs. Sliding Window)
+**The Decision:** We implemented a Fixed Window algorithm using Redis `INCR` and `EXPIRE`.
+**The Alternatives:** 
+- *Sliding Window/Log:* Tracks exact timestamps of every request. Perfectly accurate, but requires heavy memory usage and complex Redis Sorted Sets.
+**The "Why":** The Fixed Window approach uses exactly two ultra-fast Redis commands ($O(1)$ time complexity) and virtually zero memory. While it has a known "boundary burst" flaw (allowing 10 requests in 2 seconds across a minute boundary), this is perfectly acceptable for a limit of 5 requests/minute. It effectively stops spam bots without wasting expensive Redis CPU cycles on perfect accuracy.
 
-### Why "Load Shedding" was chosen:
-For a URL shortener, **redirect latency is mission-critical**, while analytics are "nice-to-have." 
+### 3. Framework Integration (Custom Extractor vs. Tower Middleware)
+**The Decision:** We built the rate limiter as a custom Axum `FromRequestParts` Extractor rather than a Tower Middleware layer.
+**The Alternatives:** 
+- *Tower Middleware:* The traditional approach in many web frameworks. Intercepts the request at the network layer.
+**The "Why":** Because `snip-rs` uses a centralized `AppError` enum to guarantee clean, standardized JSON error responses, using custom Tower middleware would require writing complex, verbose boilerplate to map low-level network errors back into our custom JSON format. A Custom Extractor integrates natively with Axum's handler-level error routing, requires 80% less code, and allows explicit, granular application to specific routes (like `POST /shorten`) without affecting others.
 
-By combining a large memory buffer (100,000 events, consuming <30MB of RAM) with non-blocking `.try_send()`, the system acts as a shock absorber. It perfectly captures sudden, short traffic spikes (like a link going viral) with zero data loss. However, during sustained, extreme load (e.g., a DDoS attack or massive viral event), it gracefully sheds telemetry load to guarantee that **every single user experiences a sub-50ms redirect**, while strictly capping memory usage to prevent Out-Of-Memory crashes. 
+### 4. Infrastructure Resilience (Local Fallback vs. Fail-Closed)
+**The Decision:** If Redis goes down, the rate limiter seamlessly falls back to a local, concurrent `moka` in-memory cache rather than returning a `500 Internal Server Error`.
+**The Alternatives:** 
+- *Fail-Closed:* Reject all requests if Redis is down. 
+- *Fail-Open:* Allow all requests if Redis is down, disabling security entirely.
+**The "Why":** This is the principle of **Defense in Depth**. If we fail-closed, a Redis blip effectively becomes a self-inflicted Denial of Service, blocking legitimate users. If we fail-open, a malicious IP could melt our database. By falling back to a local `moka` cache (configured with a 60s TTL), we guarantee that a single abusive IP cannot overwhelm the local server's CPU or database pool, even during a catastrophic infrastructure failure.
 
-## Security & Fault Tolerance: Rate Limiting
+### 5. Fallback Concurrency (Best-Effort vs. Strict Atomicity)
+**The Decision:** The local `moka` fallback uses a simple "read-then-write" approach rather than strict atomic counters.
+**The Alternatives:** 
+- *Strict Atomicity:* Using complex locks or atomic operations to guarantee exactly 5 requests are allowed, even under extreme concurrent load.
+**The "Why":** Because this is a *fallback* mechanism meant to survive infrastructure outages, "best-effort" is the right philosophy. The microscopic race condition (allowing 6 or 7 requests instead of strictly 5 under heavy concurrent load during an outage) is a perfectly acceptable trade-off for keeping the implementation simple, lock-free, and blazing fast.
 
-The `POST /shorten` endpoint is protected by a custom Axum extractor that enforces a strict Fixed Window rate limit (e.g., 5 requests per minute per IP). 
-
-**Defense in Depth (Graceful Degradation):**
-If the primary Redis instance goes down or experiences high latency, the application **does not fail closed** with a 500 error. Instead, it seamlessly falls back to a local, concurrent `moka` in-memory cache. 
-- This ensures that a single malicious IP cannot overwhelm the local server's CPU or database pool, even during a catastrophic infrastructure failure.
-- The local cache is configured with a 60-second TTL to perfectly mirror the Redis window and automatically clean up memory.
+### 6. Cache Eviction Strategy (Dynamic TTL vs. Static TTL)
+**The Decision:** When writing to Redis on a cache miss, we set the TTL to the *minimum* of 1 week or the link's actual expiration time.
+**The Alternatives:** 
+- *Static TTL:* Always cache for 1 week, regardless of link expiry.
+**The "Why":** A static TTL creates a dangerous edge case: if a link expires in 1 day, but stays in the Redis cache for 7 days, the app will serve a `307 Redirect` for an expired link, bypassing the database check. Dynamic TTL ensures expired links are instantly evicted from memory, while ensuring non-expiring links don't clutter Redis forever.
 
 ## Architecture
 
@@ -180,8 +198,6 @@ Client -> Axum Router
                              |
                              +-> MPSC Channel -> Background Worker -> Postgres (Batch Insert Clicks)
 ```
-
-On a cache miss, the result is written back to Redis with a **dynamic TTL (the minimum of 1 week or the link's actual expiration time)** to prevent serving expired links from the cache. Redis uses an `allkeys-lru` eviction policy so the most recently active links stay warm and cold links fall out naturally.
 
 If Redis is unavailable, the app degrades gracefully — all requests fall through to Postgres without error, and rate limiting falls back to local memory.
 
