@@ -4,7 +4,7 @@ pub fn encode(id: u64) -> String {
     let mut remainders = Vec::new();
     while quotient >= 62 {
         remainders.push(quotient % 62);
-        quotient = quotient / 62;
+        quotient /= 62;
     }
 
     remainders.push(quotient);

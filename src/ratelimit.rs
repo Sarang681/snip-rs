@@ -28,7 +28,7 @@ where
         let client = &state.redis_client;
 
         if let Some(client) = client {
-            if let Ok(value) = redis::put_rate_limit_key(&client, &ip_addr, "create_link").await {
+            if let Ok(value) = redis::put_rate_limit_key(client, &ip_addr, "create_link").await {
                 if value > 5 {
                     return Err(AppError::RateLimitedError);
                 }

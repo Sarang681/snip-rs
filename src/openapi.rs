@@ -2,6 +2,7 @@ use utoipa::OpenApi;
 
 use crate::routes::urls;
 
+#[allow(dead_code)]
 #[derive(OpenApi)]
 #[openapi(
     info(

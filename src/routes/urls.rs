@@ -45,7 +45,7 @@ async fn handle_shorten_url(
     validate_request_url(&request.long_url)?;
     let expiration_date = validate_and_extract_expiration_date(request.expiration_date)?;
     let db_pool = &state.conn_pool;
-    let id = db::add_url(&request.long_url, expiration_date, &db_pool).await?;
+    let id = db::add_url(&request.long_url, expiration_date, db_pool).await?;
     let short_code = encode::encode(id);
 
     Ok(Json(ShortenResponse { short_code }))
@@ -96,7 +96,7 @@ async fn handle_redirect_from_short_code(
     let db_pool = &state.conn_pool;
     match encode::decode(&short_code) {
         Some(decoded_id) => {
-            let result = db::fetch_url(decoded_id, &db_pool).await?;
+            let result = db::fetch_url(decoded_id, db_pool).await?;
             if let Some(expiration_date) = result.expiration_date {
                 let now = OffsetDateTime::now_utc();
                 if now > expiration_date {

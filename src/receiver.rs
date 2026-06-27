@@ -10,7 +10,7 @@ pub async fn receive(mut receiver: Receiver<ClickEvent>, conn_pool: Pool<Postgre
             _ = interval.tick() => {
                 if !batch.is_empty() {
                     //flush all the events to db
-                    if let Err(_) = db::add_event_click(&batch, &conn_pool).await {
+                    if db::add_event_click(&batch, &conn_pool).await.is_err() {
                     tracing::warn!("Error inserting clicks into db");
                 }
                     batch.clear();
@@ -21,7 +21,7 @@ pub async fn receive(mut receiver: Receiver<ClickEvent>, conn_pool: Pool<Postgre
                 batch.push(event);
                 if batch.len() >= 500 {
                     //flush all the events to db
-                    if let Err(_) = db::add_event_click(&batch, &conn_pool).await {
+                    if db::add_event_click(&batch, &conn_pool).await.is_err() {
                     tracing::warn!("Error inserting clicks into db");
                 }
                     batch.clear();
@@ -31,7 +31,7 @@ pub async fn receive(mut receiver: Receiver<ClickEvent>, conn_pool: Pool<Postgre
             else => {
                 if !batch.is_empty() {
                     //flush all the events to db
-                    if let Err(_) = db::add_event_click(&batch, &conn_pool).await {
+                    if db::add_event_click(&batch, &conn_pool).await.is_err() {
                     tracing::warn!("Error inserting clicks into db");
                 }
                     batch.clear();

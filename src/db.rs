@@ -7,7 +7,7 @@ use crate::{
 pub async fn connection_pool(url: &str) -> Pool<Postgres> {
     PgPoolOptions::new()
         .max_connections(5)
-        .connect(&url)
+        .connect(url)
         .await
         .expect("Failed to create DB connection pool")
 }
@@ -63,7 +63,7 @@ pub async fn add_event_click(
             .push_bind(&click.ip_addr)
             .push_bind(&click.referrer)
             .push_bind(&click.user_agent)
-            .push_bind(&click.clicked_at);
+            .push_bind(click.clicked_at);
     });
 
     let query = query_builder.build();
