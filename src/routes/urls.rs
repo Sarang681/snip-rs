@@ -9,7 +9,7 @@ use axum::{
 };
 use sqlx::types::time::OffsetDateTime;
 use tokio::sync::mpsc::Sender;
-
+use tracing::info;
 use crate::{
     AppState,
     db::{self},
@@ -45,9 +45,13 @@ async fn handle_shorten_url(
     validate_request_url(&request.long_url)?;
     let expiration_date = validate_and_extract_expiration_date(request.expiration_date)?;
     let db_pool = &state.conn_pool;
-    let id = db::add_url(&request.long_url, expiration_date, db_pool).await?;
-    let short_code = encode::encode(id);
+    let id = state.snowflake_id_generator.generate()? as i64;
+    info!("Generated ID :: {}", id);
+    db::add_url(id, &request.long_url, expiration_date, db_pool).await?;
+    info!("URL added to db successfully");
+    let short_code = encode::encode(id as u64);
 
+    info!("Generated short code successfully :: {}", short_code);
     Ok(Json(ShortenResponse { short_code }))
 }
 

@@ -13,23 +13,24 @@ pub async fn connection_pool(url: &str) -> Pool<Postgres> {
 }
 
 pub async fn add_url(
+    id: i64,
     url: &str,
     expiration_date: Option<OffsetDateTime>,
     pool: &Pool<Postgres>,
-) -> Result<u64, AppError> {
-    let result = sqlx::query!(
+) -> Result<(), AppError> {
+    sqlx::query!(
         r#"
-    INSERT INTO urls (long_url, expiration_date)
-        VALUES ($1, $2)
-        RETURNING id
+    INSERT INTO urls (id, long_url, expiration_date)
+        VALUES ($1, $2, $3)
     "#,
+        id,
         url,
         expiration_date
     )
-    .fetch_one(pool)
+    .execute(pool)
     .await?;
 
-    Ok(result.id as u64)
+    Ok(())
 }
 
 pub async fn fetch_url(id: u64, pool: &Pool<Postgres>) -> Result<FetchedLink, AppError> {
