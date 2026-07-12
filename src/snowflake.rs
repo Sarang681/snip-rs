@@ -44,6 +44,7 @@ impl SnowflakeIdGenerator {
                 self.last_timestamp.store(next_offset, Ordering::SeqCst);
                 self.sequence_number.store(0, Ordering::SeqCst);
                 // Use the new offset for ID generation
+                #[allow(clippy::identity_op)]
                 let id = (next_offset << 22) | ((self.machine_id as u64) << 12) | 0;
                 return Ok(id);
             }
