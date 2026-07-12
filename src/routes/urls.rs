@@ -1,5 +1,14 @@
 use std::net::SocketAddr;
 
+use crate::{
+    AppState,
+    db::{self},
+    encode,
+    error::{AppError, ErrorResponse},
+    models::{ClickEvent, FetchedLink, ShortenRequest, ShortenResponse},
+    ratelimit::RateLimited,
+    redis,
+};
 use axum::{
     Json, Router,
     extract::{ConnectInfo, Path, State},
@@ -10,15 +19,6 @@ use axum::{
 use sqlx::types::time::OffsetDateTime;
 use tokio::sync::mpsc::Sender;
 use tracing::info;
-use crate::{
-    AppState,
-    db::{self},
-    encode,
-    error::{AppError, ErrorResponse},
-    models::{ClickEvent, FetchedLink, ShortenRequest, ShortenResponse},
-    ratelimit::RateLimited,
-    redis,
-};
 
 pub fn router() -> Router<AppState> {
     Router::new()
