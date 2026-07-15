@@ -152,7 +152,7 @@ fn validate_and_extract_expiration_date(
 }
 
 async fn insert_short_code_into_redis(state: &AppState, short_code: &str, result: &FetchedLink) {
-    if let Some(client) = &state.redis_client {
+    if let Some(client) = &state.hash_ring.get_client(short_code) {
         if !state.redis_circuit_breaker.allow_request() {
             error!("Redis service is down, circuit breaker terminating the request");
             return;
@@ -191,7 +191,7 @@ async fn fetch_long_url_from_redis(state: &AppState, short_code: &str) -> Option
         return None;
     }
 
-    if let Some(client) = &state.redis_client {
+    if let Some(client) = &state.hash_ring.get_client(short_code) {
         match redis::get_url_key(client, short_code).await {
             Ok(result) => {
                 state.redis_circuit_breaker.record_success();

@@ -19,14 +19,26 @@ services:
       timeout: 5s
       retries: 5
 
-  redis:
+  redis-1:
     image: docker.io/library/redis:7-alpine
     networks:
       - snip-network
     ports:
       - "6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis-2:
+    image: docker.io/library/redis:7-alpine
+    networks:
+      - snip-network
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -41,12 +53,14 @@ services:
       - "8080:8080"
     environment:
       - DATABASE_URL=postgres://snip_user:snip_password@db:5432/snip_db
-      - REDIS_URL=redis://redis:6379/
+      - REDIS_NODES=redis://redis-1:6379,redis://redis-2:6379
       - RUST_LOG=info,tower_http=debug
     depends_on:
       db:
         condition: service_healthy
-      redis:
+      redis-1:
+        condition: service_healthy
+      redis-2:
         condition: service_healthy
 
 volumes:

@@ -1,4 +1,5 @@
 use crate::circuit_breaker::CircuitBreaker;
+use crate::consistent_hashing::ConsistentHashRing;
 use crate::snowflake::SnowflakeIdGenerator;
 use crate::{models::ClickEvent, state::AppState};
 use moka::future::Cache;
@@ -6,9 +7,11 @@ use std::sync::Arc;
 use std::{net::SocketAddr, time::Duration};
 use tokio::sync::mpsc;
 use tower_http::trace::TraceLayer;
+use tracing::info;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod circuit_breaker;
+mod consistent_hashing;
 mod db;
 mod encode;
 mod error;
@@ -31,7 +34,8 @@ async fn main() {
         .init();
 
     let db_url = std::env::var("DATABASE_URL").expect("Databse URL not provided");
-    let redis_url = std::env::var("REDIS_URL").expect("Redis URL not provided");
+    let redis_nodes =
+        std::env::var("REDIS_NODES").unwrap_or_else(|_| "redis://localhost:6379".to_string());
     let machine_id: u16 = std::env::var("MACHINE_ID")
         .as_deref()
         .unwrap_or("1")
@@ -40,6 +44,34 @@ async fn main() {
     if machine_id > 1023 {
         panic!("Machine ID must be between 0 and 1023");
     }
+
+    // Create the hash ring (150 virtual nodes per physical node)
+    let mut hash_ring = ConsistentHashRing::new(150);
+    // Add each Redis node to the ring
+    for node_url in redis_nodes.split(',') {
+        let node_url = node_url.trim();
+
+        match redis::get_redis_client(node_url).await {
+            Ok(client) => {
+                let node_id = node_url.to_string();
+                tracing::info!("Adding Redis node: {}", node_id);
+                hash_ring.add_node(client, &node_id);
+            }
+            Err(e) => {
+                tracing::warn!("Failed to connect to Redis node {}: {}", node_url, e);
+                // Skip this node, don't add it to the ring
+            }
+        }
+    }
+
+    info!(
+        "Hash ring has {} virtual nodes",
+        hash_ring.node_mappings.len()
+    );
+    for (pos, node_id) in hash_ring.node_mappings.iter() {
+        info!("Position {}: {}", pos, node_id);
+    }
+    let hash_ring = Arc::new(hash_ring);
     let moka_cache: Cache<String, i64> = Cache::builder()
         .max_capacity(50_000)
         .time_to_live(Duration::from_secs(60))
@@ -53,7 +85,7 @@ async fn main() {
 
     let app_state = AppState::new(
         &db_url,
-        &redis_url,
+        hash_ring,
         tx.clone(),
         moka_cache,
         snowflake_id_generator,

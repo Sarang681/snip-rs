@@ -46,13 +46,7 @@ pub async fn get_url_key(client: &Client, short_code: &str) -> Result<String, fr
     Ok(long_url)
 }
 
-pub async fn put_rate_limit_key(
-    client: &Client,
-    ip_addr: &str,
-    action: &str,
-) -> Result<i64, fred::error::Error> {
-    let key = format!("ratelimit:{}:{}", ip_addr, action);
-
+pub async fn put_rate_limit_key(client: &Client, key: String) -> Result<i64, fred::error::Error> {
     let value = client.incr::<i64, &String>(&key).await?;
 
     if value == 1 {

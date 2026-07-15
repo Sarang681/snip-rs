@@ -25,16 +25,28 @@ where
             .to_string();
 
         let state = AppState::from_ref(state);
-        let client = &state.redis_client;
+        let hash_ring = &state.hash_ring;
 
+        // TODO: Implement per-node circuit breakers
+        // Currently using a single circuit breaker for all Redis nodes.
+        // This means if one node fails repeatedly, the circuit trips and ALL nodes
+        // become unavailable, even healthy ones.
+        //
+        // Future improvement:
+        // - Create a HashMap<String, CircuitBreaker> mapping node_id -> circuit breaker
+        // - Update ConsistentHashRing to return (Client, CircuitBreaker) pairs
+        // - Each node gets independent fault tolerance
         if !state.redis_circuit_breaker.allow_request() {
             error!("Redis service is down, rate limiter using moka to limit incoming requests");
             rate_limit_moka(&ip_addr, &state).await?;
             return Ok(Self);
         }
 
+        let hash_key = format!("ratelimit:{}:{}", ip_addr, "create_link");
+        let client = hash_ring.get_client(&hash_key);
+
         if let Some(client) = client {
-            match redis::put_rate_limit_key(client, &ip_addr, "create_link").await {
+            match redis::put_rate_limit_key(&client, hash_key).await {
                 Ok(value) => {
                     state.redis_circuit_breaker.record_success();
                     if value > 5 {
