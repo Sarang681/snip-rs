@@ -16,9 +16,11 @@ use axum::{
     response::Redirect,
     routing::{get, post},
 };
+use fred::error::ErrorKind;
 use sqlx::types::time::OffsetDateTime;
+use sqlx::{Pool, Postgres};
 use tokio::sync::mpsc::Sender;
-use tracing::info;
+use tracing::{error, info};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -47,7 +49,12 @@ async fn handle_shorten_url(
     let db_pool = &state.conn_pool;
     let id = state.snowflake_id_generator.generate()? as i64;
     info!("Generated ID :: {}", id);
-    db::add_url(id, &request.long_url, expiration_date, db_pool).await?;
+
+    if let Some(value) =
+        add_url_to_postgres_db(&state, &request, expiration_date, db_pool, id).await
+    {
+        return value;
+    }
     info!("URL added to db successfully");
     let short_code = encode::encode(id as u64);
 
@@ -69,7 +76,7 @@ async fn handle_shorten_url(
 async fn handle_redirect_from_short_code(
     State(state): State<AppState>,
     Path(short_code): Path<String>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>, //TODO: use axum-client-ip crate to extract IP address
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Result<Redirect, AppError> {
     let ip_addr = addr.ip().to_string();
@@ -93,23 +100,36 @@ async fn handle_redirect_from_short_code(
     };
 
     if let Some(long_url) = fetch_long_url_from_redis(&state, &short_code).await {
-        tracing::info!("Found url in redis, returning without making db call");
+        info!("Found url in redis, returning without making db call");
         send_click_event(state.event_sender, click_event).await;
         return Ok(Redirect::temporary(&long_url));
     }
     let db_pool = &state.conn_pool;
     match encode::decode(&short_code) {
         Some(decoded_id) => {
-            let result = db::fetch_url(decoded_id, db_pool).await?;
-            if let Some(expiration_date) = result.expiration_date {
-                let now = OffsetDateTime::now_utc();
-                if now > expiration_date {
-                    return Err(AppError::Gone);
+            if !state.postgres_circuit_breaker.allow_request() {
+                error!("Postgres service is down, circuit breaker terminating the request");
+                return Err(AppError::ServerError);
+            }
+            match db::fetch_url(decoded_id, db_pool).await {
+                Ok(result) => {
+                    state.postgres_circuit_breaker.record_success();
+                    if let Some(expiration_date) = result.expiration_date {
+                        let now = OffsetDateTime::now_utc();
+                        if now > expiration_date {
+                            return Err(AppError::Gone);
+                        }
+                    }
+                    insert_short_code_into_redis(&state, &short_code, &result).await;
+                    send_click_event(state.event_sender, click_event).await;
+                    Ok(Redirect::temporary(&result.long_url))
+                }
+                Err(e) => {
+                    state.postgres_circuit_breaker.record_failure();
+                    error!("Error while fetching URL from postgres DB :: {}", e);
+                    return Err(AppError::ServerError);
                 }
             }
-            insert_short_code_into_redis(&state, &short_code, &result).await;
-            send_click_event(state.event_sender, click_event).await;
-            Ok(Redirect::temporary(&result.long_url))
         }
         None => Err(AppError::BadUrlError),
     }
@@ -133,11 +153,24 @@ fn validate_and_extract_expiration_date(
 
 async fn insert_short_code_into_redis(state: &AppState, short_code: &str, result: &FetchedLink) {
     if let Some(client) = &state.redis_client {
+        if !state.redis_circuit_breaker.allow_request() {
+            error!("Redis service is down, circuit breaker terminating the request");
+            return;
+        }
         let ttl = get_cache_ttl(result.expiration_date);
         match redis::put_url_key(client, short_code, &result.long_url, ttl).await {
-            Ok(_) => tracing::info!("Inserted code :: {} successfully", short_code),
-            Err(_) => tracing::warn!("Could not insert the short code into redis"),
+            Ok(_) => {
+                info!("Inserted code :: {} successfully", short_code);
+                state.redis_circuit_breaker.record_success();
+            }
+            Err(e) => {
+                error!("Could not insert the short code into redis :: {}", e);
+                state.redis_circuit_breaker.record_failure();
+            }
         }
+    } else {
+        error!("Error while fetching redis client");
+        state.redis_circuit_breaker.record_failure();
     }
 }
 
@@ -153,22 +186,62 @@ fn get_cache_ttl(expiration_date: Option<OffsetDateTime>) -> i64 {
 }
 
 async fn fetch_long_url_from_redis(state: &AppState, short_code: &str) -> Option<String> {
+    if !state.redis_circuit_breaker.allow_request() {
+        error!("Redis service is down, circuit breaker terminating the request");
+        return None;
+    }
+
     if let Some(client) = &state.redis_client {
         match redis::get_url_key(client, short_code).await {
             Ok(result) => {
-                return Some(result);
+                state.redis_circuit_breaker.record_success();
+                Some(result)
             }
-            Err(_) => {
-                tracing::warn!("Redis key not found");
-                return None;
-            }
+            Err(e) => match e.kind() {
+                ErrorKind::NotFound => {
+                    state.redis_circuit_breaker.record_success();
+                    tracing::warn!("Redis key not found");
+                    None
+                }
+                _ => {
+                    state.redis_circuit_breaker.record_failure();
+                    error!("Error while fetching URL from cache :: {}", e);
+                    None
+                }
+            },
         }
+    } else {
+        error!("Error fetching redis client");
+        state.redis_circuit_breaker.record_failure();
+        None
     }
-    None
 }
 
 async fn send_click_event(event_sender: Sender<ClickEvent>, click_event: ClickEvent) {
     if let Err(e) = event_sender.try_send(click_event) {
         tracing::warn!("Receiver dropped :: {}", e);
     }
+}
+
+async fn add_url_to_postgres_db(
+    state: &AppState,
+    request: &ShortenRequest,
+    expiration_date: Option<OffsetDateTime>,
+    db_pool: &Pool<Postgres>,
+    id: i64,
+) -> Option<Result<Json<ShortenResponse>, AppError>> {
+    if !state.postgres_circuit_breaker.allow_request() {
+        error!("Postgres Service is down, circuit breaker terminating the request");
+        return Some(Err(AppError::ServerError));
+    }
+
+    match db::add_url(id, &request.long_url, expiration_date, db_pool).await {
+        Ok(()) => state.postgres_circuit_breaker.record_success(),
+        Err(e) => {
+            state.postgres_circuit_breaker.record_failure();
+            error!("Unable to insert url into postgres db :: {}", e);
+            return Some(Err(AppError::ServerError));
+        }
+    }
+    None
 }

@@ -1,3 +1,4 @@
+use crate::circuit_breaker::CircuitBreaker;
 use crate::snowflake::SnowflakeIdGenerator;
 use crate::{models::ClickEvent, state::AppState};
 use moka::future::Cache;
@@ -7,6 +8,7 @@ use tokio::sync::mpsc;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
+mod circuit_breaker;
 mod db;
 mod encode;
 mod error;
@@ -46,12 +48,17 @@ async fn main() {
 
     let (tx, rx) = mpsc::channel::<ClickEvent>(100_000);
 
+    let redis_circuit_breaker = Arc::new(CircuitBreaker::new(5, 10_000, 10));
+    let postgres_circuit_breaker = Arc::new(CircuitBreaker::new(5, 10_000, 10));
+
     let app_state = AppState::new(
         &db_url,
         &redis_url,
         tx.clone(),
         moka_cache,
         snowflake_id_generator,
+        redis_circuit_breaker,
+        postgres_circuit_breaker,
     )
     .await;
 

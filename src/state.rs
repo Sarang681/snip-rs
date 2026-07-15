@@ -4,6 +4,7 @@ use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
+use crate::circuit_breaker::CircuitBreaker;
 use crate::snowflake::SnowflakeIdGenerator;
 use crate::{db, models::ClickEvent, redis};
 
@@ -14,6 +15,8 @@ pub struct AppState {
     pub event_sender: Sender<ClickEvent>,
     pub moka_cache: Cache<String, i64>,
     pub snowflake_id_generator: Arc<SnowflakeIdGenerator>,
+    pub redis_circuit_breaker: Arc<CircuitBreaker>,
+    pub postgres_circuit_breaker: Arc<CircuitBreaker>,
 }
 
 impl AppState {
@@ -23,6 +26,8 @@ impl AppState {
         event_sender: Sender<ClickEvent>,
         moka_cache: Cache<String, i64>,
         snowflake_id_generator: Arc<SnowflakeIdGenerator>,
+        redis_circuit_breaker: Arc<CircuitBreaker>,
+        postgres_circuit_breaker: Arc<CircuitBreaker>,
     ) -> Self {
         let conn_pool = db::connection_pool(db_url).await;
         let redis_client = redis::get_redis_client(redis_url).await.ok();
@@ -38,6 +43,8 @@ impl AppState {
             event_sender,
             moka_cache,
             snowflake_id_generator,
+            redis_circuit_breaker,
+            postgres_circuit_breaker,
         }
     }
 }

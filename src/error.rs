@@ -1,5 +1,6 @@
 use axum::{Json, http::StatusCode, response::IntoResponse};
 use serde::Serialize;
+use std::fmt::{Display, Formatter};
 use utoipa::ToSchema;
 
 #[derive(Serialize, ToSchema)]
@@ -92,5 +93,19 @@ impl From<url::ParseError> for AppError {
 impl From<time::error::ComponentRange> for AppError {
     fn from(_: time::error::ComponentRange) -> Self {
         AppError::BadTimestampError
+    }
+}
+
+impl Display for AppError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AppError::ServerError => write!(f, "Internal server error"),
+            AppError::NotFoundError => write!(f, "Resource not found"),
+            AppError::BadUrlError => write!(f, "Invalid or malformed URL"),
+            AppError::Gone => write!(f, "Resource is no longer available"),
+            AppError::RateLimitedError => write!(f, "Rate limit exceeded"),
+            AppError::DatabaseError(e) => write!(f, "Database error: {}", e),
+            AppError::BadTimestampError => write!(f, "Timestamp is invalid"),
+        }
     }
 }

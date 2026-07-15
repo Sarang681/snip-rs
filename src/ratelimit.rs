@@ -1,8 +1,8 @@
 use std::net::SocketAddr;
 
-use axum::extract::{ConnectInfo, FromRef, FromRequestParts};
-
 use crate::{error::AppError, redis, state::AppState};
+use axum::extract::{ConnectInfo, FromRef, FromRequestParts};
+use tracing::error;
 
 #[derive(Debug)]
 pub struct RateLimited;
@@ -27,15 +27,29 @@ where
         let state = AppState::from_ref(state);
         let client = &state.redis_client;
 
+        if !state.redis_circuit_breaker.allow_request() {
+            error!("Redis service is down, rate limiter using moka to limit incoming requests");
+            rate_limit_moka(&ip_addr, &state).await?;
+            return Ok(Self);
+        }
+
         if let Some(client) = client {
-            if let Ok(value) = redis::put_rate_limit_key(client, &ip_addr, "create_link").await {
-                if value > 5 {
-                    return Err(AppError::RateLimitedError);
+            match redis::put_rate_limit_key(client, &ip_addr, "create_link").await {
+                Ok(value) => {
+                    state.redis_circuit_breaker.record_success();
+                    if value > 5 {
+                        return Err(AppError::RateLimitedError);
+                    }
                 }
-            } else {
-                rate_limit_moka(&ip_addr, &state).await?;
+                Err(e) => {
+                    error!("Error while rate limiting using redis :: {}", e);
+                    state.redis_circuit_breaker.record_failure();
+                    rate_limit_moka(&ip_addr, &state).await?;
+                }
             }
         } else {
+            error!("Couldn't find redis client while rate limiting");
+            state.redis_circuit_breaker.record_failure();
             rate_limit_moka(&ip_addr, &state).await?;
         }
 
